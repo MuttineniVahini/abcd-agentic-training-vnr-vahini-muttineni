@@ -1,0 +1,373 @@
+{
+  "name": "TravelPlanner",
+  "nodes": [
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Extract Twilio/WhatsApp payload into consistent fields\n// Works for Twilio sandbox inbound webhook payload and generic WhatsApp structures\nconst raw = $json;\n\n// Twilio sends body as form params: Body, From, To\nconst from = raw.Body ? raw.From : (raw.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.from || null);\nconst bodyText = raw.Body || raw.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.text?.body || \"\";\nconst timestamp = new Date().toLocaleString('en-IN');\n\n// Very simple extraction heuristics (improve later): destination, budget, days\nlet destination = null;\nlet budget = null;\nlet days = null;\n\nconst txt = bodyText.toLowerCase();\nconst dayMatch = txt.match(/(\\d+)\\s*[-]?\\s*day|(\\d+)\\s*days/);\nif(dayMatch) days = dayMatch[1] || dayMatch[2];\nconst budgetMatch = txt.match(/(rs|inr|₹)\\s?\\s?(\\d{3,})|(under\\s+rs\\s?(\\d{3,}))|(under\\s+\\u20B9\\s?(\\d{3,}))/i);\nif(budgetMatch) {\n  budget = (budgetMatch[2] || budgetMatch[4] || budgetMatch[5] || null);\n}\n// simple destination as first proper noun after 'to' or last word sequence\nconst toMatch = txt.match(/to\\s+([a-zA-Z\\s]+)/);\nif(toMatch) destination = toMatch[1].trim();\n\nreturn {\n  From: from,\n  Body: bodyText,\n  Timestamp: timestamp,\n  Destination: destination || \"Not specified\",\n  Budget: budget || \"Not specified\",\n  Days: days || \"Not specified\"\n};"
+      },
+      "id": "18e36603-7042-489a-9900-43c412a10397",
+      "name": "Extract Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -992,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Build an adaptive Gemini prompt using user info and memory\nconst from = $json.From;\nconst body = $json.Body;\nconst dest = $json.Destination;\nconst budget = $json.Budget;\nconst days = $json.Days;\n\n// Try to fetch last memory row (if available via previous node) - placeholder\nlet memoryText = '';\nif ($node[\"Load Memory\"] && $node[\"Load Memory\"].json) {\n  const mem = $node[\"Load Memory\"].json;\n  memoryText = `User memory: LastDestination=${mem.LastDestination || ''}, Budget=${mem.Budget || ''}, Style=${mem.Style || ''}`;\n}\n\nconst adapt = `You are TripPlanner — a friendly AI travel assistant. Use the user message below to create a clear, day-wise itinerary.\nRules:\n- Detect user's budget, duration, and destination from the message. If budget is given, keep suggestions within that amount.\n- Provide day-wise plan with Morning/Afternoon/Evening activities.\n- Suggest 2 hotel options (area names) and approximate local transport tips.\n- Provide short estimated costs (total) in the currency inferred (use INR if not specified).\n- Keep reply concise and conversational, with bullets and emojis.\n\nUser message: \"${body}\"\nDetected Destination: ${dest}\nDetected Days: ${days}\nDetected Budget: ${budget}\n${memoryText}\n\nReturn the itinerary as plain text suitable for WhatsApp (no JSON).`;\n\nreturn { prompt: adapt, From: from, Destination: dest, Days: days, Budget: budget };\n"
+      },
+      "id": "b010e412-58ca-4cb8-b1ad-51c8b4898809",
+      "name": "Build Gemini Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -576,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Normalize Gemini response into plain text itinerary\n// Different Gemini responses may have different shapes — adjust if needed\nlet text = '';\nif($json?.candidates?.length){\n  text = $json.candidates[0].content.map(c=>c.text || c.parts?.map(p=>p.text).join('')).join('\\n');\n} else if ($json?.outputText) {\n  text = $json.outputText;\n} else if ($json?.predictions && $json.predictions[0]?.content) {\n  text = $json.predictions[0].content.parts.map(p=>p.text).join('');\n}\ntext = text || 'Sorry, I could not generate a plan right now.';\n\nreturn { ItineraryText: text };\n"
+      },
+      "id": "16aea3e3-f9a9-4561-8478-877d8efa52f8",
+      "name": "Parse Gemini Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        80,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "lookup",
+        "documentId": "1A-zGOhBY5qE2j4CuVfiqLvQFvyKOro4RrwLS8GV15Ak"
+      },
+      "id": "5a6796ef-c100-4b89-b1ad-fdd667bea2a7",
+      "name": "Load Memory",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        -512,
+        144
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "ulinImitamDCIrvs",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "path": "whatsapp",
+        "options": {}
+      },
+      "id": "ef62b64e-d077-43fb-ac41-442ad43577a9",
+      "name": "Receive WhatsApp Message1",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1472,
+        320
+      ],
+      "webhookId": "57fdd87a-218b-4265-9402-f9ebcefc0d05"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": "1A-zGOhBY5qE2j4CuVfiqLvQFvyKOro4RrwLS8GV15Ak",
+        "sheetName": "Sheet1",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "TIMESTAMP": "={{ $json.Timestamp }}",
+            "FROM": "={{ $json.From }}",
+            "MESSAGE": "={{ $json.Body }}",
+            "ITINERARY": "={{ $json.ItineraryText }}",
+            "NOTES": "={{ $json.Destination + ' | ' + $json.Budget + ' | ' + $json.Days }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "8cf68b2c-c2f5-4aec-8abf-490f76cafb9f",
+      "name": "Log Trip to Google Sheets1",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        336,
+        208
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "ulinImitamDCIrvs",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": "1A-zGOhBY5qE2j4CuVfiqLvQFvyKOro4RrwLS8GV15Ak",
+        "sheetName": "Memory",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Phone": "={{ $json.From }}",
+            "LastDestination": "={{ $json.Destination }}",
+            "Budget": "={{ $json.Budget }}",
+            "Style": "={{ 'Adaptive' }}",
+            "LastPlan": "={{ $json.ItineraryText }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "e137039a-d595-4547-9393-cb32c4fe60de",
+      "name": "Save Memory (User Preferences)1",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        336,
+        384
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "ulinImitamDCIrvs",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "requestMethod": "POST",
+        "url": "https://graph.facebook.com/v22.0/897447436778963/messages",
+        "jsonParameters": true,
+        "options": {},
+        "bodyParametersJson": "{\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"919848134223\",\n  \"type\": \"text\",\n  \"text\": {\n    \"body\": \"Hello from n8n 👋 — WhatsApp API test successful!\"\n  }\n}\n",
+        "headerParametersJson": "Authorization: Bearer EAAJtwZAAja40BPZC7v7rELodx5bGatk33RbVXZCEIm3Wp5FeSmvJPzjZAtUqZAtZBtkkpqQHF5jSODA8EGErZAXkkzf6YsfUVxtIaFaZBI84CCUiZC6J3PLyZCQh1oZBDq1Pd7YkEyvZBd0SiCznWsAdYhV1yJc8h6L7WM8UuvhYYM2jscwZBFMR4XFq3AhNfCyRkRjkAnkBm0l9gbc3ukKdngrSkrKkG7jt5XRywMyCyjRhdNpZBLvQ6W6aR4LZCdRwCgFvjEdlIJXGaZCWYXthNY0kPyvWeTEZD\nContent-Type: application/json"
+      },
+      "id": "ac93e7a0-beda-4925-82a6-73f20923be46",
+      "name": "Send Reply to WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        640,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        -416,
+        544
+      ],
+      "id": "e0c14cf4-ea94-4366-8b39-35d9e218c9cd",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "LIxmjuE79duISTdD",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ae5250e6-7e08-4872-9708-72c48d2f8def",
+              "leftValue": "",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1232,
+        368
+      ],
+      "id": "1018ea35-8676-4f39-bfbe-a7938d0ad0cd",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "System Prompt — TripMate (AI Trip Manager)\n\nYou are TripMate, an intelligent AI Trip Manager.\nYour job is to plan detailed, enjoyable, and realistic trips based on the user’s input.\n\nWhen the user provides a destination, budget, duration, or preferences, you will:\n\nCreate a day-by-day travel itinerary with activities, places to visit, and meal suggestions.\n\nEstimate total cost within the given budget.\n\nInclude travel, stay, and local experiences.\n\nKeep the tone friendly, helpful, and aesthetic, like a personal travel companion.\n\nIf the input is unclear, ask short and relevant questions to clarify.\nKeep your answers clear, structured, and practical — suitable for real travelers.\n\nYour goal:\nMake trip planning effortless, inspiring, and personalized — every time.",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [
+        -272,
+        336
+      ],
+      "id": "e2ad98a8-55d6-4553-a7aa-43d1b508bb04",
+      "name": "Travel Planner"
+    },
+    {
+      "parameters": {},
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        -272,
+        544
+      ],
+      "id": "dfac03f4-e0fd-46e5-b4a3-caa7b000e65a",
+      "name": "Simple Memory"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Extract Message": {
+      "main": [
+        [
+          {
+            "node": "Load Memory",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build Gemini Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Memory": {
+      "main": [
+        [
+          {
+            "node": "Build Gemini Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Gemini Prompt": {
+      "main": [
+        [
+          {
+            "node": "Travel Planner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Gemini Response": {
+      "main": [
+        [
+          {
+            "node": "Log Trip to Google Sheets1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Save Memory (User Preferences)1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Reply to WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Receive WhatsApp Message1": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Travel Planner",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Extract Message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Travel Planner": {
+      "main": [
+        [
+          {
+            "node": "Parse Gemini Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "Travel Planner",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "f4fb0164-c5c3-4122-ac95-d3ca27daad56",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "6de14b4d796fd183f70c9ef428792031d7db8108ffeb7ddf173abb65db5a237b"
+  },
+  "id": "5GAQvfU0jDlHY7KO",
+  "tags": []
+}
