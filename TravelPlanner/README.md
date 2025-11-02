@@ -119,4 +119,4 @@ Before importing this workflow, make sure you have:
 
 ## 👩‍💻 **Author**
 **Vahini Muttineni**  
-Creator of **TripMate.AI** — a WhatsApp-based travel planner using n8n, Gemini AI & Google Sheets.
+Creator of **TravelPlanner** — a WhatsApp-based travel planner using n8n, Gemini AI & Google Sheets.
